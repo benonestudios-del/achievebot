@@ -2,20 +2,37 @@
 import aiosqlite
 from config import DB_PATH
 
+
+async def _ensure_users_columns(conn):
+    """
+    Идемпотентная миграция: гарантируем, что в таблице users есть
+    rank_messages, rank_comments, rank_combined.
+    """
+    cols = {}
+    async with conn.execute("PRAGMA table_info(users)") as cur:
+        async for cid, name, ctype, notnull, dflt, pk in cur:
+            cols[name] = True
+
+    # Добавляем недостающие колонки. DEFAULT нужен, чтобы старые строки получили значение сразу.
+    if "rank_messages" not in cols:
+        await conn.execute("ALTER TABLE users ADD COLUMN rank_messages TEXT DEFAULT ''")
+    if "rank_comments" not in cols:
+        await conn.execute("ALTER TABLE users ADD COLUMN rank_comments TEXT DEFAULT ''")
+    if "rank_combined" not in cols:
+        await conn.execute("ALTER TABLE users ADD COLUMN rank_combined TEXT DEFAULT ''")
+
+
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
-        # Основная таблица пользователей
+        # Основная таблица пользователей (старая база может быть без новых полей — ниже миграция это починит)
         await db.execute('''
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
+            user_id   INTEGER PRIMARY KEY,
+            username  TEXT,
             joined_at TEXT,
-            messages INTEGER DEFAULT 0,
-            fanfics INTEGER DEFAULT 0,
-            comments INTEGER DEFAULT 0,
-            rank_messages TEXT DEFAULT '',
-            rank_comments TEXT DEFAULT '',
-            rank_combined TEXT DEFAULT ''
+            messages  INTEGER DEFAULT 0,
+            fanfics   INTEGER DEFAULT 0,
+            comments  INTEGER DEFAULT 0
         )
         ''')
 
@@ -23,7 +40,7 @@ async def init_db():
         await db.execute('''
         CREATE TABLE IF NOT EXISTS achievements (
             user_id INTEGER,
-            code TEXT,
+            code    TEXT,
             PRIMARY KEY (user_id, code)
         )
         ''')
@@ -31,35 +48,46 @@ async def init_db():
         # Таблица активности по дням
         await db.execute('''
         CREATE TABLE IF NOT EXISTS activity (
-            user_id INTEGER,
-            date TEXT,
+            user_id  INTEGER,
+            date     TEXT,
             messages INTEGER DEFAULT 0,
             comments INTEGER DEFAULT 0,
             PRIMARY KEY (user_id, date)
         )
         ''')
 
+        # 🔧 Миграция недостающих колонок users
+        await _ensure_users_columns(db)
+
         await db.commit()
 
+
+# ========== Пользователи ==========
 async def register_user(user_id: int, username: str):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('''
-        INSERT OR IGNORE INTO users (user_id, username, joined_at)
-        VALUES (?, ?, datetime('now'))
-        ''', (user_id, username))
+        await db.execute(
+            "INSERT OR IGNORE INTO users (user_id, username, joined_at) VALUES (?, ?, datetime('now'))",
+            (user_id, username)
+        )
         await db.commit()
+
 
 async def get_user_profile(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('''
-        SELECT username, joined_at, messages, fanfics, comments,
-               rank_messages, rank_comments, rank_combined
-        FROM users
-        WHERE user_id = ?
+            SELECT username, joined_at, messages, fanfics, comments,
+                   rank_messages, rank_comments, rank_combined
+            FROM users
+            WHERE user_id = ?
         ''', (user_id,)) as cursor:
             return await cursor.fetchone()
 
+
 async def update_user_rank(user_id: int):
+    """
+    Пересчитать 3 типа званий и вернуть словарь изменений:
+    { "messages": "...", "comments": "...", "combined": "..." } — только те, что изменились.
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('''
             SELECT messages, comments, rank_messages, rank_comments, rank_combined
@@ -68,6 +96,7 @@ async def update_user_rank(user_id: int):
             row = await cursor.fetchone()
             if not row:
                 return {}
+
             messages, comments, old_r_msg, old_r_com, old_r_comb = row
 
     # 📨 Звание за сообщения
@@ -132,6 +161,10 @@ async def update_user_rank(user_id: int):
 
 
 async def increment_message_count(user_id: int, is_comment: bool = False):
+    """
+    +1 сообщение; если это ответ на сообщение — считаем как комментарий.
+    Возвращает словарь изменений рангов (см. update_user_rank()).
+    """
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE users SET messages = messages + 1 WHERE user_id = ?",
@@ -144,10 +177,9 @@ async def increment_message_count(user_id: int, is_comment: bool = False):
             )
         await db.commit()
 
-    # пересчёт званий и получение изменений
     changes = await update_user_rank(user_id)
 
-    # ⏱ запись в activity
+    # ⏱ Запись в таблицу activity
     from datetime import datetime
     today = datetime.utcnow().strftime("%Y-%m-%d")
     async with aiosqlite.connect(DB_PATH) as db:
@@ -171,11 +203,9 @@ async def set_user_rank(user_id: int, rank_type: str, rank_value: str):
     """rank_type: 'messages', 'comments', 'combined'"""
     field = f"rank_{rank_type}"
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            f"UPDATE users SET {field} = ? WHERE user_id = ?",
-            (rank_value, user_id)
-        )
+        await db.execute(f"UPDATE users SET {field} = ? WHERE user_id = ?", (rank_value, user_id))
         await db.commit()
+
 
 async def get_user_id_by_username(username: str):
     username = username.lstrip("@").lower()
@@ -186,15 +216,14 @@ async def get_user_id_by_username(username: str):
             row = await cursor.fetchone()
             return row[0] if row else None
 
-# ✅ Новый метод: получить всех пользователей
+
 async def get_all_users():
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT user_id, username FROM users ORDER BY username"
-        ) as cursor:
+        async with db.execute("SELECT user_id, username FROM users ORDER BY username") as cursor:
             return await cursor.fetchall()
 
-# ✅ Ачивки
+
+# ========== Ачивки ==========
 async def has_achievement(user_id: int, code: str) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
@@ -202,6 +231,7 @@ async def has_achievement(user_id: int, code: str) -> bool:
             (user_id, code)
         ) as cursor:
             return await cursor.fetchone() is not None
+
 
 async def award_achievement(user_id: int, code: str):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -211,6 +241,7 @@ async def award_achievement(user_id: int, code: str):
         )
         await db.commit()
 
+
 async def get_user_achievements(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
@@ -219,13 +250,13 @@ async def get_user_achievements(user_id: int):
         ) as cursor:
             return [row[0] async for row in cursor]
 
+
+# ========== Книги и активность ==========
 async def set_user_books(user_id: int, books_count: int):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE users SET fanfics = ? WHERE user_id = ?",
-            (books_count, user_id)
-        )
+        await db.execute("UPDATE users SET fanfics = ? WHERE user_id = ?", (books_count, user_id))
         await db.commit()
+
 
 async def get_user_activity_stats(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
