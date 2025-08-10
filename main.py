@@ -539,14 +539,30 @@ async def ach_pick_one(callback: CallbackQuery, state: FSMContext):
 # ======================
 @dp.message()
 async def handle_all_messages(message: Message):
+    # ботов не считаем
     if message.from_user.is_bot:
         return
 
+    # По умолчанию — это обычное сообщение
+    is_comment_flag = False
+
+    # Комментом считаем только сообщения из дискашн-чата канала
+    # DISCUSSION_CHAT_ID ты уже берёшь из env
+    try:
+        if DISCUSSION_CHAT_ID and message.chat and message.chat.id == DISCUSSION_CHAT_ID:
+            # в тредах постов Telegram ставит флаг is_topic_message (или есть message_thread_id)
+            is_comment_flag = bool(getattr(message, "is_topic_message", False) or getattr(message, "message_thread_id", None))
+    except Exception:
+        # на всякий случай ничего не ломаем
+        is_comment_flag = False
+
+    # считаем всегда, просто помечаем было ли это "комментом"
     changes = await increment_message_count(
         user_id=message.from_user.id,
-        is_comment=is_channel_comment(message)  # ← вместо bool(message.reply_to_message)
+        is_comment=is_comment_flag
     )
 
+    # оповещение — только если реально есть повышение
     if isinstance(changes, dict) and changes:
         lines = ["🎉 <b>Поздравляем с новым званием!</b>"]
         if "messages" in changes:
@@ -556,6 +572,7 @@ async def handle_all_messages(message: Message):
         if "combined" in changes:
             lines.append(f"🌟 Комбинированное: {changes['combined']}")
         await message.reply("\n".join(lines))
+
 
 # ======================
 # AIOHTTP сервер (webhook)
@@ -610,4 +627,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+
 
