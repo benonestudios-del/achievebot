@@ -1,7 +1,5 @@
 # main.py
 import os
-import asyncio
-from datetime import datetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
@@ -26,23 +24,23 @@ from db import (
 )
 from achievements_loader import load_achievements_from_excel
 
-# ========= ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ДЛЯ ВЕБХУКА =========
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # напр.: https://your-bot.onrender.com
+# ====== ВЕБХУК ======
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # например: https://achievebot.onrender.com
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}" if WEBHOOK_HOST else None
 
-# 🔒 Укажи свой Telegram user_id
-ADMIN_IDS = [6382960258]  # ← замени на свой
+# 🔒 твой админ id
+ADMIN_IDS = [6382960258]
 
 bot_username = None
 achievements_by_code = {}     # code -> {title, description, category}
-achievements_by_category = {} # category -> list[ {code,title,description} ]
+achievements_by_category = {} # category -> list[{code,title,description}]
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 # ======================
-# Общие утилиты
+# Утилиты
 # ======================
 def is_command(cmd_name: str, message: Message) -> bool:
     if not message.text:
@@ -55,8 +53,6 @@ def is_command(cmd_name: str, message: Message) -> bool:
 
 def get_next_rank_progress(messages: int, comments: int) -> str:
     steps = []
-
-    # Комментарии
     comment_ranks = [
         (5, "💡 Рядовой комментатор"),
         (15, "🧐 Младший комментатор"),
@@ -65,30 +61,28 @@ def get_next_rank_progress(messages: int, comments: int) -> str:
         (300, "🧠 Капитан-комментатор"),
         (400, "🎖 Майор-комментатор"),
         (500, "🎖 Полковник-комментатор"),
-        (1000, "🫅 Верховный комментатор")
+        (1000, "🫅 Верховный комментатор"),
     ]
     for required, title in comment_ranks:
         if comments < required:
             steps.append(f"💬 Ещё {required - comments} комментариев до {title}")
             break
 
-    # Сообщения
     message_ranks = [
         (100, "🗨 Болтун"),
         (300, "📣 Голос канала"),
         (1000, "🔥 Легенда чата"),
-        (3000, "🌪 Стихийное бедствие")
+        (3000, "🌪 Стихийное бедствие"),
     ]
     for required, title in message_ranks:
         if messages < required:
             steps.append(f"📨 Ещё {required - messages} сообщений до {title}")
             break
 
-    # Комбинированные
     combined_ranks = [
         ((300, 50), "🌟 Активист"),
         ((2000, 1000), "🛡 Ветеран"),
-        ((5000, 2000), "🧭 Бог FicBen")
+        ((5000, 2000), "🧭 Бог FicBen"),
     ]
     for (msg_req, com_req), title in combined_ranks:
         if messages < msg_req or comments < com_req:
@@ -116,7 +110,6 @@ async def handle_profile(message: Message):
 
     user_id = message.from_user.id
     data = await get_user_profile(user_id)
-
     if not data:
         await message.reply("Вы ещё не зарегистрированы. Напишите мне /start.")
         return
@@ -155,10 +148,8 @@ async def handle_profile(message: Message):
 async def handle_stats(message: Message):
     if not is_command("/stats", message):
         return
-
     user_id = message.from_user.id
     stats = await get_user_activity_stats(user_id)
-
     if not stats:
         await message.reply("Нет данных об активности за последние дни.")
         return
@@ -166,7 +157,6 @@ async def handle_stats(message: Message):
     lines = ["📊 <b>Активность за последние 7 дней:</b>"]
     for date, messages, comments in stats:
         lines.append(f"📅 {date}: 💬 Сообщений — {messages} | 🗨 Комментариев — {comments}")
-
     await message.reply("\n".join(lines))
 
 @dp.message(lambda msg: msg.text and msg.text.startswith("/id"))
@@ -179,7 +169,6 @@ async def handle_id(message: Message):
 async def handle_help(message: Message):
     if not is_command("/help", message):
         return
-
     help_text = """
 <b>📘 Доступные команды:</b>
 
@@ -194,14 +183,12 @@ async def handle_help(message: Message):
 <b>🔧 Админ-команды:</b>
 /admin — панель с кнопками (книги/ачивки)
 """.strip()
-
     await message.reply(help_text)
 
 @dp.message(lambda msg: msg.text and msg.text.startswith("/ranks"))
 async def handle_ranks(message: Message):
     if not is_command("/ranks", message):
         return
-
     text = """
 <b>🎖 Система званий</b>
 
@@ -222,32 +209,27 @@ async def handle_ranks(message: Message):
 🫅 Верховный комментатор — 1000+
 
 <b>🌟 Комбинированные:</b>
-🌟 Активист — 300+ сообщений и 50+ комментариев  
-🛡 Ветеран — 2000+ сообщений и 1000+ комментариев  
+🌟 Активист — 300+ сообщений и 50+ комментариев
+🛡 Ветеран — 2000+ сообщений и 1000+ комментариев
 🧭 Бог FicBen — 5000+ сообщений и 2000+ комментариев
 """.strip()
-
     await message.reply(text)
 
 @dp.message(lambda msg: msg.text and msg.text.startswith("/achievements"))
 async def handle_all_achievements(message: Message):
     if not is_command("/achievements", message):
         return
-
     if not achievements_by_code:
         await message.reply("❌ Список ачивок не загружен.")
         return
-
     grouped = {}
     for code, ach in achievements_by_code.items():
         grouped.setdefault(ach['category'], []).append(ach)
-
     text = "<b>🏆 Все доступные ачивки:</b>\n"
     for category, items in grouped.items():
         text += f"\n<b>{category}</b>\n"
         for ach in items:
             text += f"• <b>{ach['title']}</b> — {ach['description']}\n"
-
     await message.reply(text.strip())
 
 @dp.message(lambda msg: msg.text and msg.text.startswith("/about"))
@@ -263,15 +245,14 @@ async def handle_about(message: Message):
 
 🏆 У меня есть крутая система рангов и ачивок. Просто общайся — и прогрессируй!
 
-📚 Команда для начала: /start  
-📝 Посмотреть профиль: /profile  
-🎖 Открыть список ачивок: /achievements  
-📈 Проверить активность: /stats  
-⚙️ Помощь: /help  
+📚 Команда для начала: /start
+📝 Посмотреть профиль: /profile
+🎖 Открыть список ачивок: /achievements
+📈 Проверить активность: /stats
+⚙️ Помощь: /help
 
 👨‍💻 Автор: @real_qewbytini
-    """.strip()
-
+""".strip()
     await message.reply(about_text)
 
 # ======================
@@ -284,7 +265,7 @@ class SetBooksFSM(StatesGroup):
 class GiveAchievementFSM(StatesGroup):
     waiting_for_user = State()
     waiting_for_category = State()
-    waiting_for_pick = State()  # ожидание выбора конкретной ачивки кнопкой
+    waiting_for_pick = State()
 
 def admin_root_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -293,12 +274,6 @@ def admin_root_kb() -> InlineKeyboardMarkup:
     ])
 
 def make_users_keyboard(users, page: int, per_page: int, mode: str) -> InlineKeyboardMarkup:
-    """
-    mode: 'books' | 'ach'
-    callback_data:
-      - {mode}:page:{page}
-      - {mode}:select:{user_id}
-    """
     total = len(users)
     start = page * per_page
     end = start + per_page
@@ -321,10 +296,6 @@ def make_users_keyboard(users, page: int, per_page: int, mode: str) -> InlineKey
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def make_categories_keyboard(categories: list[str], page: int = 0) -> InlineKeyboardMarkup:
-    """
-    До 6 кнопок (2 ряда по 3).
-    callback_data: ach:cat:<index> и ach:cat_page:<page>
-    """
     per_page = 6
     start = page * per_page
     end = start + per_page
@@ -352,12 +323,6 @@ def make_categories_keyboard(categories: list[str], page: int = 0) -> InlineKeyb
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def make_achievements_keyboard(items: list[dict], page: int = 0, per_page: int = 10) -> InlineKeyboardMarkup:
-    """
-    items: [{code,title,description}]
-    callback_data:
-      - ach:pick:<code>
-      - ach:items_page:<page>
-    """
     start = page * per_page
     end = start + per_page
     chunk = items[start:end]
@@ -395,7 +360,6 @@ async def admin_back(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("<b>🔧 Админ-панель:</b>\nВыбери действие:", reply_markup=admin_root_kb())
     await callback.answer()
 
-# ---- Контекстные ключи для FSM-хранилища
 class _CtxKeys:
     USERS = "all_users"
     PAGE = "page"
@@ -405,7 +369,6 @@ class _CtxKeys:
     ITEMS_PAGE = "items_page"
     CATS_PAGE = "cats_page"
 
-# ---- Книги
 @dp.callback_query(F.data == "admin:set_books")
 async def admin_set_books_start(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
@@ -447,7 +410,6 @@ async def set_books_amount(message: Message, state: FSMContext):
     await message.reply(f"✅ Количество книг у <code>{user_id}</code> установлено на <b>{message.text}</b>.")
     await state.clear()
 
-# ---- Ачивки (категории → список ачивок → выдача)
 @dp.callback_query(F.data == "admin:give_achieve")
 async def admin_give_achieve_start(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
@@ -474,15 +436,11 @@ async def ach_users_page(callback: CallbackQuery, state: FSMContext):
 async def ach_select_user(callback: CallbackQuery, state: FSMContext):
     user_id = int(callback.data.split(":")[2])
     await state.update_data({_CtxKeys.SELECTED_USER: user_id})
-
     categories = list(achievements_by_category.keys())
     await state.set_state(GiveAchievementFSM.waiting_for_category)
     await state.update_data({_CtxKeys.CATEGORIES: categories, _CtxKeys.CATS_PAGE: 0})
     kb = make_categories_keyboard(categories, page=0)
-    await callback.message.edit_text(
-        f"Кому выдаём: <code>{user_id}</code>\nВыбери категорию ачивок:",
-        reply_markup=kb
-    )
+    await callback.message.edit_text(f"Кому выдаём: <code>{user_id}</code>\nВыбери категорию ачивок:", reply_markup=kb)
     await callback.answer()
 
 @dp.callback_query(F.data.regexp(r"^ach:cat_page:\d+$"))
@@ -515,7 +473,6 @@ async def ach_pick_category(callback: CallbackQuery, state: FSMContext):
         return
     category = categories[idx]
     await state.update_data({_CtxKeys.SELECTED_CATEGORY: category, _CtxKeys.ITEMS_PAGE: 0})
-
     items = achievements_by_category.get(category, [])
     kb = make_achievements_keyboard(items, page=0, per_page=10)
     await state.set_state(GiveAchievementFSM.waiting_for_pick)
@@ -565,8 +522,6 @@ async def handle_all_messages(message: Message):
         user_id=message.from_user.id,
         is_comment=bool(message.reply_to_message)
     )
-
-    # Если твой increment_message_count() не возвращает изменения — просто ничего не шлём
     if isinstance(changes, dict) and changes:
         lines = ["🎉 <b>Поздравляем с новым званием!</b>"]
         if "messages" in changes:
@@ -578,8 +533,9 @@ async def handle_all_messages(message: Message):
         await message.reply("\n".join(lines))
 
 # ======================
-# AIOHTTP СЕРВЕР (WEBHOOK)
+# AIOHTTP сервер (webhook)
 # ======================
+
 async def on_startup(app):
     global bot_username, achievements_by_code, achievements_by_category
 
@@ -598,32 +554,34 @@ async def on_startup(app):
     for cat in achievements_by_category:
         achievements_by_category[cat].sort(key=lambda x: (x.get("title") or x.get("code") or "").lower())
 
-    # Устанавливаем вебхук
     if not WEBHOOK_URL:
         raise RuntimeError("WEBHOOK_HOST не задан. Укажи переменную окружения WEBHOOK_HOST, например https://your-bot.onrender.com")
     await bot.set_webhook(WEBHOOK_URL)
     print(f"🌍 Вебхук установлен: {WEBHOOK_URL}")
 
-async def on_shutdown(app):
-    await bot.delete_webhook()
-    print("🧹 Вебхук удалён")
+    # Лог состояния вебхука (для диагностики)
+    try:
+        info = await bot.get_webhook_info()
+        print(f"ℹ️ getWebhookInfo: url={info.url} pending={info.pending_update_count} ip={getattr(info, 'ip_address', 'n/a')}")
+    except Exception as e:
+        print(f"⚠️ Не удалось получить getWebhookInfo: {e}")
 
 async def handle_webhook(request):
     update = await request.json()
     await dp.feed_webhook_update(bot, update)
     return web.Response()
-    # Health-check endpoint для Render
+
+# Health-check для Render
 async def handle_healthz(request):
     return web.Response(text="OK")
 
 def run():
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
-    app.router.add_get("/healthz", handle_healthz)
+    app.router.add_get("/healthz", handle_healthz)  # Render health check
     app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
+    # ВАЖНО: не удаляем вебхук автоматически! (не добавляем on_shutdown)
     web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
 
 if __name__ == "__main__":
     run()
-
