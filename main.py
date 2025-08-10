@@ -612,13 +612,18 @@ async def handle_webhook(request):
     update = await request.json()
     await dp.feed_webhook_update(bot, update)
     return web.Response()
+    # Health-check endpoint для Render
+async def handle_healthz(request):
+    return web.Response(text="OK")
 
 def run():
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    app.router.add_get("/healthz", handle_healthz)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
     web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
 
 if __name__ == "__main__":
     run()
+
