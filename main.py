@@ -24,6 +24,7 @@ from db import (
 )
 from achievements_loader import load_achievements_from_excel
 
+DISCUSSION_CHAT_ID = int(os.getenv("DISCUSSION_CHAT_ID")) if os.getenv("DISCUSSION_CHAT_ID") else None
 # ====== ВЕБХУК ======
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # например: https://achievebot.onrender.com
 WEBHOOK_PATH = "/webhook"
@@ -38,6 +39,28 @@ achievements_by_category = {} # category -> list[{code,title,description}]
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+
+from aiogram.types import Message
+
+def is_channel_comment(msg: Message) -> bool:
+    """
+    Коммент = сообщение в треде (message_thread_id) в связанной группе-обсуждении канала.
+    Фильтры:
+      – supergroup/group
+      – chat.is_forum == True (для тредов)
+      – есть message_thread_id
+      – не автофорвард канала
+      – (опционально) чат совпадает с DISCUSSION_CHAT_ID
+    """
+    try:
+        in_group = msg.chat.type in ("supergroup", "group")
+        in_forum = getattr(msg.chat, "is_forum", False)
+        in_thread = msg.message_thread_id is not None
+        not_autofwd = not getattr(msg, "is_automatic_forward", False)
+        chat_ok = (DISCUSSION_CHAT_ID is None) or (msg.chat.id == DISCUSSION_CHAT_ID)
+        return in_group and in_forum and in_thread and not_autofwd and chat_ok
+    except Exception:
+        return False
 
 # ======================
 # Утилиты
@@ -518,10 +541,12 @@ async def ach_pick_one(callback: CallbackQuery, state: FSMContext):
 async def handle_all_messages(message: Message):
     if message.from_user.is_bot:
         return
+
     changes = await increment_message_count(
         user_id=message.from_user.id,
-        is_comment=bool(message.reply_to_message)
+        is_comment=is_channel_comment(message)  # ← вместо bool(message.reply_to_message)
     )
+
     if isinstance(changes, dict) and changes:
         lines = ["🎉 <b>Поздравляем с новым званием!</b>"]
         if "messages" in changes:
@@ -585,3 +610,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+
