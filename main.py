@@ -1,5 +1,7 @@
 # main.py
 import os
+import asyncio
+from datetime import datetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
@@ -24,8 +26,10 @@ from db import (
 )
 from achievements_loader import load_achievements_from_excel
 
+# === привязанный чат обсуждений канала ===
 DISCUSSION_CHAT_ID = int(os.getenv("DISCUSSION_CHAT_ID")) if os.getenv("DISCUSSION_CHAT_ID") else None
-# ====== ВЕБХУК ======
+
+# === вебхук ===
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # например: https://achievebot.onrender.com
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}" if WEBHOOK_HOST else None
@@ -40,30 +44,28 @@ achievements_by_category = {} # category -> list[{code,title,description}]
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-from aiogram.types import Message
-
+# --- ХЕЛПЕР: определяем, является ли сообщение комментарием к посту канала
 def is_channel_comment(msg: Message) -> bool:
-    """
-    Коммент = сообщение в треде (message_thread_id) в связанной группе-обсуждении канала.
-    Фильтры:
-      – supergroup/group
-      – chat.is_forum == True (для тредов)
-      – есть message_thread_id
-      – не автофорвард канала
-      – (опционально) чат совпадает с DISCUSSION_CHAT_ID
-    """
-    try:
-        in_group = msg.chat.type in ("supergroup", "group")
-        in_forum = getattr(msg.chat, "is_forum", False)
-        in_thread = msg.message_thread_id is not None
-        not_autofwd = not getattr(msg, "is_automatic_forward", False)
-        chat_ok = (DISCUSSION_CHAT_ID is None) or (msg.chat.id == DISCUSSION_CHAT_ID)
-        return in_group and in_forum and in_thread and not_autofwd and chat_ok
-    except Exception:
+    # учитываем только сообщения именно в связанном чате (если задан)
+    if DISCUSSION_CHAT_ID and msg.chat.id != DISCUSSION_CHAT_ID:
         return False
 
+    # Обычная привязанная группа без тем:
+    # комментарий = ответ на авто-перенос поста из канала
+    rt = getattr(msg, "reply_to_message", None)
+    if rt and getattr(rt, "is_automatic_forward", False):
+        sender_chat = getattr(rt, "sender_chat", None)
+        if sender_chat and getattr(sender_chat, "type", None) == "channel":
+            return True
+
+    # На будущее: если включишь топики (форум), это тоже будет комментом
+    if getattr(msg, "is_topic_message", False) or getattr(msg, "message_thread_id", None):
+        return True
+
+    return False
+
 # ======================
-# Утилиты
+# Общие утилиты
 # ======================
 def is_command(cmd_name: str, message: Message) -> bool:
     if not message.text:
@@ -76,6 +78,8 @@ def is_command(cmd_name: str, message: Message) -> bool:
 
 def get_next_rank_progress(messages: int, comments: int) -> str:
     steps = []
+
+    # Комментарии
     comment_ranks = [
         (5, "💡 Рядовой комментатор"),
         (15, "🧐 Младший комментатор"),
@@ -84,28 +88,30 @@ def get_next_rank_progress(messages: int, comments: int) -> str:
         (300, "🧠 Капитан-комментатор"),
         (400, "🎖 Майор-комментатор"),
         (500, "🎖 Полковник-комментатор"),
-        (1000, "🫅 Верховный комментатор"),
+        (1000, "🫅 Верховный комментатор")
     ]
     for required, title in comment_ranks:
         if comments < required:
             steps.append(f"💬 Ещё {required - comments} комментариев до {title}")
             break
 
+    # Сообщения
     message_ranks = [
         (100, "🗨 Болтун"),
         (300, "📣 Голос канала"),
         (1000, "🔥 Легенда чата"),
-        (3000, "🌪 Стихийное бедствие"),
+        (3000, "🌪 Стихийное бедствие")
     ]
     for required, title in message_ranks:
         if messages < required:
             steps.append(f"📨 Ещё {required - messages} сообщений до {title}")
             break
 
+    # Комбинированные
     combined_ranks = [
         ((300, 50), "🌟 Активист"),
         ((2000, 1000), "🛡 Ветеран"),
-        ((5000, 2000), "🧭 Бог FicBen"),
+        ((5000, 2000), "🧭 Бог FicBen")
     ]
     for (msg_req, com_req), title in combined_ranks:
         if messages < msg_req or comments < com_req:
@@ -133,6 +139,7 @@ async def handle_profile(message: Message):
 
     user_id = message.from_user.id
     data = await get_user_profile(user_id)
+
     if not data:
         await message.reply("Вы ещё не зарегистрированы. Напишите мне /start.")
         return
@@ -171,8 +178,10 @@ async def handle_profile(message: Message):
 async def handle_stats(message: Message):
     if not is_command("/stats", message):
         return
+
     user_id = message.from_user.id
     stats = await get_user_activity_stats(user_id)
+
     if not stats:
         await message.reply("Нет данных об активности за последние дни.")
         return
@@ -180,6 +189,7 @@ async def handle_stats(message: Message):
     lines = ["📊 <b>Активность за последние 7 дней:</b>"]
     for date, messages, comments in stats:
         lines.append(f"📅 {date}: 💬 Сообщений — {messages} | 🗨 Комментариев — {comments}")
+
     await message.reply("\n".join(lines))
 
 @dp.message(lambda msg: msg.text and msg.text.startswith("/id"))
@@ -188,10 +198,21 @@ async def handle_id(message: Message):
         return
     await message.reply(f"🆔 Твой user_id: <code>{message.from_user.id}</code>")
 
+@dp.message(lambda msg: msg.text and msg.text.startswith("/whereami"))
+async def handle_whereami(message: Message):
+    await message.reply(
+        "🔍 Где я:\n"
+        f"chat.id: <code>{message.chat.id}</code>\n"
+        f"chat.type: <b>{message.chat.type}</b>\n"
+        f"thread: <code>{getattr(message, 'message_thread_id', None)}</code>\n"
+        f"is_automatic_forward: <code>{getattr(message, 'is_automatic_forward', False)}</code>"
+    )
+
 @dp.message(lambda msg: msg.text and msg.text.startswith("/help"))
 async def handle_help(message: Message):
     if not is_command("/help", message):
         return
+
     help_text = """
 <b>📘 Доступные команды:</b>
 
@@ -201,17 +222,20 @@ async def handle_help(message: Message):
 /achievements — список всех доступных ачивок
 /ranks — показать систему званий
 /stats — посмотреть активность за 7 дней
+/whereami — показать chat.id (для настройки обсуждений)
 /help — показать это сообщение
 
 <b>🔧 Админ-команды:</b>
 /admin — панель с кнопками (книги/ачивки)
 """.strip()
+
     await message.reply(help_text)
 
 @dp.message(lambda msg: msg.text and msg.text.startswith("/ranks"))
 async def handle_ranks(message: Message):
     if not is_command("/ranks", message):
         return
+
     text = """
 <b>🎖 Система званий</b>
 
@@ -232,27 +256,32 @@ async def handle_ranks(message: Message):
 🫅 Верховный комментатор — 1000+
 
 <b>🌟 Комбинированные:</b>
-🌟 Активист — 300+ сообщений и 50+ комментариев
-🛡 Ветеран — 2000+ сообщений и 1000+ комментариев
+🌟 Активист — 300+ сообщений и 50+ комментариев  
+🛡 Ветеран — 2000+ сообщений и 1000+ комментариев  
 🧭 Бог FicBen — 5000+ сообщений и 2000+ комментариев
 """.strip()
+
     await message.reply(text)
 
 @dp.message(lambda msg: msg.text and msg.text.startswith("/achievements"))
 async def handle_all_achievements(message: Message):
     if not is_command("/achievements", message):
         return
+
     if not achievements_by_code:
         await message.reply("❌ Список ачивок не загружен.")
         return
+
     grouped = {}
     for code, ach in achievements_by_code.items():
         grouped.setdefault(ach['category'], []).append(ach)
+
     text = "<b>🏆 Все доступные ачивки:</b>\n"
     for category, items in grouped.items():
         text += f"\n<b>{category}</b>\n"
         for ach in items:
             text += f"• <b>{ach['title']}</b> — {ach['description']}\n"
+
     await message.reply(text.strip())
 
 @dp.message(lambda msg: msg.text and msg.text.startswith("/about"))
@@ -268,14 +297,15 @@ async def handle_about(message: Message):
 
 🏆 У меня есть крутая система рангов и ачивок. Просто общайся — и прогрессируй!
 
-📚 Команда для начала: /start
-📝 Посмотреть профиль: /profile
-🎖 Открыть список ачивок: /achievements
-📈 Проверить активность: /stats
-⚙️ Помощь: /help
+📚 Команда для начала: /start  
+📝 Посмотреть профиль: /profile  
+🎖 Открыть список ачивок: /achievements  
+📈 Проверить активность: /stats  
+⚙️ Помощь: /help  
 
 👨‍💻 Автор: @real_qewbytini
-""".strip()
+    """.strip()
+
     await message.reply(about_text)
 
 # ======================
@@ -288,7 +318,7 @@ class SetBooksFSM(StatesGroup):
 class GiveAchievementFSM(StatesGroup):
     waiting_for_user = State()
     waiting_for_category = State()
-    waiting_for_pick = State()
+    waiting_for_pick = State()  # ожидание выбора конкретной ачивки кнопкой
 
 def admin_root_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -459,11 +489,15 @@ async def ach_users_page(callback: CallbackQuery, state: FSMContext):
 async def ach_select_user(callback: CallbackQuery, state: FSMContext):
     user_id = int(callback.data.split(":")[2])
     await state.update_data({_CtxKeys.SELECTED_USER: user_id})
+
     categories = list(achievements_by_category.keys())
     await state.set_state(GiveAchievementFSM.waiting_for_category)
     await state.update_data({_CtxKeys.CATEGORIES: categories, _CtxKeys.CATS_PAGE: 0})
     kb = make_categories_keyboard(categories, page=0)
-    await callback.message.edit_text(f"Кому выдаём: <code>{user_id}</code>\nВыбери категорию ачивок:", reply_markup=kb)
+    await callback.message.edit_text(
+        f"Кому выдаём: <code>{user_id}</code>\nВыбери категорию ачивок:",
+        reply_markup=kb
+    )
     await callback.answer()
 
 @dp.callback_query(F.data.regexp(r"^ach:cat_page:\d+$"))
@@ -496,6 +530,7 @@ async def ach_pick_category(callback: CallbackQuery, state: FSMContext):
         return
     category = categories[idx]
     await state.update_data({_CtxKeys.SELECTED_CATEGORY: category, _CtxKeys.ITEMS_PAGE: 0})
+
     items = achievements_by_category.get(category, [])
     kb = make_achievements_keyboard(items, page=0, per_page=10)
     await state.set_state(GiveAchievementFSM.waiting_for_pick)
@@ -539,30 +574,18 @@ async def ach_pick_one(callback: CallbackQuery, state: FSMContext):
 # ======================
 @dp.message()
 async def handle_all_messages(message: Message):
-    # ботов не считаем
     if message.from_user.is_bot:
         return
 
-    # По умолчанию — это обычное сообщение
-    is_comment_flag = False
+    # считаем «комментом» только то, что реально комментарий к посту канала
+    is_comment = is_channel_comment(message)
 
-    # Комментом считаем только сообщения из дискашн-чата канала
-    # DISCUSSION_CHAT_ID ты уже берёшь из env
-    try:
-        if DISCUSSION_CHAT_ID and message.chat and message.chat.id == DISCUSSION_CHAT_ID:
-            # в тредах постов Telegram ставит флаг is_topic_message (или есть message_thread_id)
-            is_comment_flag = bool(getattr(message, "is_topic_message", False) or getattr(message, "message_thread_id", None))
-    except Exception:
-        # на всякий случай ничего не ломаем
-        is_comment_flag = False
-
-    # считаем всегда, просто помечаем было ли это "комментом"
     changes = await increment_message_count(
         user_id=message.from_user.id,
-        is_comment=is_comment_flag
+        is_comment=is_comment
     )
 
-    # оповещение — только если реально есть повышение
+    # Поздравляем только при реальной смене ранга (db.update_user_rank вернёт только изменения)
     if isinstance(changes, dict) and changes:
         lines = ["🎉 <b>Поздравляем с новым званием!</b>"]
         if "messages" in changes:
@@ -573,11 +596,9 @@ async def handle_all_messages(message: Message):
             lines.append(f"🌟 Комбинированное: {changes['combined']}")
         await message.reply("\n".join(lines))
 
-
 # ======================
-# AIOHTTP сервер (webhook)
+# AIOHTTP СЕРВЕР (WEBHOOK)
 # ======================
-
 async def on_startup(app):
     global bot_username, achievements_by_code, achievements_by_category
 
@@ -596,36 +617,31 @@ async def on_startup(app):
     for cat in achievements_by_category:
         achievements_by_category[cat].sort(key=lambda x: (x.get("title") or x.get("code") or "").lower())
 
+    # Устанавливаем вебхук
     if not WEBHOOK_URL:
         raise RuntimeError("WEBHOOK_HOST не задан. Укажи переменную окружения WEBHOOK_HOST, например https://your-bot.onrender.com")
     await bot.set_webhook(WEBHOOK_URL)
     print(f"🌍 Вебхук установлен: {WEBHOOK_URL}")
 
-    # Лог состояния вебхука (для диагностики)
-    try:
-        info = await bot.get_webhook_info()
-        print(f"ℹ️ getWebhookInfo: url={info.url} pending={info.pending_update_count} ip={getattr(info, 'ip_address', 'n/a')}")
-    except Exception as e:
-        print(f"⚠️ Не удалось получить getWebhookInfo: {e}")
+async def on_shutdown(app):
+    await bot.delete_webhook()
+    print("🧹 Вебхук удалён")
 
 async def handle_webhook(request):
     update = await request.json()
     await dp.feed_webhook_update(bot, update)
     return web.Response()
 
-# Health-check для Render
-async def handle_healthz(request):
-    return web.Response(text="OK")
+async def handle_health(request):
+    return web.Response(text="ok")
 
 def run():
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
-    app.router.add_get("/healthz", handle_healthz)  # Render health check
+    app.router.add_get("/healthz", handle_health)  # health-check для Render
     app.on_startup.append(on_startup)
-    # ВАЖНО: не удаляем вебхук автоматически! (не добавляем on_shutdown)
+    app.on_shutdown.append(on_shutdown)
     web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
 
 if __name__ == "__main__":
     run()
-
-
