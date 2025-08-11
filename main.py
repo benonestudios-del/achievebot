@@ -3,7 +3,7 @@ import os
 import asyncio
 import aiohttp
 from datetime import datetime
-from aiohttp import web
+from aiohttp import web, ClientSession
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
@@ -666,4 +666,5 @@ def run():
 if __name__ == "__main__":
     run()
     
+
 
