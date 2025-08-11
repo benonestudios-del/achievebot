@@ -1,6 +1,7 @@
 # main.py
 import os
 import asyncio
+import aiohttp
 from datetime import datetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
@@ -43,6 +44,23 @@ achievements_by_category = {} # category -> list[{code,title,description}]
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+
+# ====== Новый код для автопинга ======
+async def keep_alive_task():
+    """Постоянно пингует /healthz, чтобы Render не усыплял контейнер."""
+    if not WEBHOOK_HOST:
+        print("[KEEPALIVE] WEBHOOK_HOST не задан, автопинг отключен.")
+        return
+    url = f"{WEBHOOK_HOST}/healthz"
+    async with ClientSession() as session:
+        while True:
+            try:
+                async with session.get(url) as resp:
+                    text = await resp.text()
+                    print(f"[KEEPALIVE] {resp.status} {text}")
+            except Exception as e:
+                print(f"[KEEPALIVE] Ошибка пинга: {e}")
+            await asyncio.sleep(300)  # каждые 5 минут
 
 # --- ХЕЛПЕР: определяем, является ли сообщение комментарием к посту канала
 def is_channel_comment(msg: Message) -> bool:
@@ -622,6 +640,8 @@ async def on_startup(app):
         raise RuntimeError("WEBHOOK_HOST не задан. Укажи переменную окружения WEBHOOK_HOST, например https://your-bot.onrender.com")
     await bot.set_webhook(WEBHOOK_URL)
     print(f"🌍 Вебхук установлен: {WEBHOOK_URL}")
+    
+    asyncio.create_task(keep_alive_task())
 
 async def on_shutdown(app):
     await bot.delete_webhook()
@@ -645,3 +665,5 @@ def run():
 
 if __name__ == "__main__":
     run()
+    
+
